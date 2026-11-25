@@ -173,9 +173,20 @@
             <span>合并简并副本</span><b id="stat-merged">0</b>
           </div>
           <p class="hint" id="reflection-readout"></p>
+          <h3>历史笔事件（按原始笔事件撤销）</h3>
+          <p class="hint">
+            每条对应一次落笔及其全部对称副本。点击“撤”只移除该笔事件自己的副本，
+            先前另一支同色交叉笔画仍在原处；顶栏撤销/重做可恢复。
+          </p>
           <div class="stroke-list" id="stroke-list" role="list"></div>
           <h3>所选笔画实例</h3>
           <div class="instance-list" id="instance-list"></div>
+        </section>
+
+        <section class="group">
+          <h2>对称笔迹运行状态</h2>
+          <p class="hint" id="diagnostic-status">暂无笔迹；落笔后在此显示对称运行状态。</p>
+          <div class="diagnostic-list" id="diagnostic-list"></div>
         </section>
 
         <section class="group">

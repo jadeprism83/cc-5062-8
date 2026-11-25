@@ -8,6 +8,7 @@
   "strokes": [
     {
       "id": "s1",
+      "eventId": "s1",
       "points": [
         {
           "x": 490,
@@ -198,6 +199,7 @@
     },
     {
       "id": "s2",
+      "eventId": "s2",
       "points": [
         {
           "x": 200,

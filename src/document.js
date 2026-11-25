@@ -36,12 +36,15 @@ export class SketchDocument {
     return this.strokes.length;
   }
 
-  addStroke({ points, brush, symmetry, dedupePolicy }) {
+  addStroke({ points, brush, symmetry, dedupePolicy, eventId }) {
     if (!Array.isArray(points) || points.length === 0) {
       throw new RangeError('a stroke needs at least one point');
     }
     const stroke = {
       id: `s${this.nextId}`,
+      // 稳定身份：一次落笔（pointerdown→up）对应一个原始笔事件。
+      // 对称实例是这一个事件经群变换派生的副本，共享同一 eventId。
+      eventId: typeof eventId === 'string' && eventId.length > 0 ? eventId : `s${this.nextId}`,
       points: points.map((point) => ({ x: Number(point.x), y: Number(point.y) })),
       brush: normalizeBrush(brush),
       symmetry: makeSymmetrySnapshot(symmetry ?? {}),
@@ -60,6 +63,18 @@ export class SketchDocument {
     if (index < 0) return null;
     const [removed] = this.strokes.splice(index, 1);
     this.compiledCache.delete(id);
+    return removed;
+  }
+
+  /**
+   * 按原始笔事件撤销：一次轴线落笔只撤去它自己生成的全部对称副本，
+   * 不触碰其它笔事件（包括先前同色的交叉笔画）。返回被移除的笔画。
+   */
+  removeStrokeByEvent(eventId) {
+    const index = this.strokes.findIndex((stroke) => stroke.eventId === eventId);
+    if (index < 0) return null;
+    const [removed] = this.strokes.splice(index, 1);
+    this.compiledCache.delete(removed.id);
     return removed;
   }
 
@@ -112,6 +127,7 @@ export class SketchDocument {
       nextId: this.nextId,
       strokes: this.strokes.map((stroke) => ({
         id: stroke.id,
+        eventId: stroke.eventId,
         // 保存原始双精度坐标，重放才能逐字节复现；四舍五入会改变像素。
         points: stroke.points.map((point) => ({ x: point.x, y: point.y })),
         brush: stroke.brush,
@@ -142,6 +158,8 @@ export class SketchDocument {
         brush: stroke.brush,
         symmetry: stroke.symmetry,
         dedupePolicy: stroke.dedupePolicy,
+        // 旧版 v1 文档没有 eventId 时回落到笔画 id，身份仍然稳定。
+        eventId: typeof stroke.eventId === 'string' ? stroke.eventId : stroke.id,
       });
     }
     doc.nextId = Math.max(doc.nextId, maxId + 1, Number(raw.nextId) || 1);

@@ -236,3 +236,151 @@ test('保存的笔画 JSON 可重新打开并渲染出相同像素', async ({ pa
   expect(replayed.png).toEqual(saved.png);
   await page2.close();
 });
+
+test('历史面板按原始笔事件撤销：只移除该笔自身副本，同色交叉笔画保持原位', async ({ page }) => {
+  await openApp(page);
+  const center = { x: 450, y: 320 };
+  const sameColor = '#222222';
+
+  // 先前的同色交叉笔画（水平）。
+  await page.evaluate(({ center, sameColor }) => {
+    const api = window.__symmetryInk;
+    api.setTool({ color: sameColor, opacity: 0.6 });
+    api.addStrokeProgrammatically(
+      [
+        { x: center.x - 120, y: center.y },
+        { x: center.x + 120, y: center.y },
+      ],
+      { eventId: 'evt-cross' }
+    );
+  }, { center, sameColor });
+  const crossPng = await page.evaluate(() => Array.from(window.__symmetryInk.encodeCurrentPNG()));
+
+  // 轴上落笔（竖直，同色）。
+  await page.evaluate(({ center, sameColor }) => {
+    window.__symmetryInk.addStrokeProgrammatically(
+      [
+        { x: center.x, y: center.y - 120 },
+        { x: center.x, y: center.y + 120 },
+      ],
+      { eventId: 'evt-axis', brush: { color: sameColor } }
+    );
+  }, { center, sameColor });
+  await expect(page.locator('#stat-strokes')).toHaveText('2');
+
+  // 历史面板出现两个笔事件条目，各带一个“撤”按钮。
+  const undoButtons = page.locator('.stroke-item .stroke-undo');
+  await expect(undoButtons).toHaveCount(2);
+
+  // 点击轴上笔事件那一行的“撤”。
+  const axisRow = page.locator('.stroke-item', { hasText: 'evt-axis' });
+  await axisRow.locator('.stroke-undo').click();
+  await expect(page.locator('#stat-strokes')).toHaveText('1');
+
+  // 画布回到只有交叉笔画时的像素。
+  const restoredPng = await page.evaluate(() => Array.from(window.__symmetryInk.encodeCurrentPNG()));
+  expect(restoredPng).toEqual(crossPng);
+
+  // 留下的仍是交叉笔事件，轴上笔事件已消失。
+  const remaining = await page.evaluate(() =>
+    window.__symmetryInk.getDoc().strokes.map((s) => s.eventId)
+  );
+  expect(remaining).toEqual(['evt-cross']);
+  // 顶栏重做可恢复被撤的笔事件。
+  await page.click('#redo');
+  await expect(page.locator('#stat-strokes')).toHaveText('2');
+});
+
+test('每段笔迹暴露轨道与稳定身份，轴上简并实例记录全部来源元素', async ({ page }) => {
+  await openApp(page);
+  await page.evaluate(() => {
+    window.__symmetryInk.addStrokeProgrammatically(
+      [{ x: 450, y: 320 }],
+      {
+        eventId: 'evt-center-dot',
+        brush: { shape: 'round', size: 18, aspect: 1, skew: 0, tiltDeg: 0, opacity: 0.5, color: '#ff0000' },
+        symmetry: { rule: 'dihedral', divisions: 6 },
+      }
+    );
+  });
+  const identity = await page.evaluate(() =>
+    window.__symmetryInk.getStrokeIdentity(window.__symmetryInk.getDoc().strokes[0].id)
+  );
+  expect(identity.eventId).toBe('evt-center-dot');
+  expect(identity.instanceCount).toBe(1);
+  expect(identity.degenerateCount).toBe(1);
+  expect(identity.degenerateInstances[0].sourceElementIds).toHaveLength(12);
+  expect(identity.writeCount + identity.mergedSamples).toBe(identity.sampleCount * identity.groupOrder);
+});
+
+test('对称笔迹运行状态可见：正常去重无异常，keep-all 给提示级标记', async ({ page }) => {
+  await openApp(page);
+  await page.evaluate(() => {
+    const api = window.__symmetryInk;
+    api.addStrokeProgrammatically([{ x: 450, y: 320 }], {
+      eventId: 'evt-ok',
+      brush: { shape: 'round', size: 16, aspect: 1, skew: 0, tiltDeg: 0, opacity: 0.5, color: '#ff0000' },
+    });
+  });
+  const healthy = await page.evaluate(() => window.__symmetryInk.getSymmetryDiagnostics());
+  expect(healthy.healthy).toBe(true);
+  expect(healthy.anomalies).toEqual([]);
+  await expect(page.locator('#diagnostic-status')).toContainText('对称笔迹正常');
+
+  await page.evaluate(() => {
+    window.__symmetryInk.addStrokeProgrammatically([{ x: 400, y: 300 }], {
+      eventId: 'evt-keep',
+      dedupePolicy: 'keep-all',
+    });
+  });
+  const warned = await page.evaluate(() => window.__symmetryInk.getSymmetryDiagnostics());
+  expect(warned.healthy).toBe(true); // 仅 warning，不算错误
+  expect(warned.anomalies).toHaveLength(1);
+  expect(warned.anomalies[0].level).toBe('warning');
+  await expect(page.locator('#diagnostic-status')).toContainText('keep-all');
+});
+
+test('切换对称规则并绘制，轴向关系与实例来自所选笔画冻结的修补后计算', async ({ page }) => {
+  await openApp(page);
+  // D6 落笔。
+  await drawStroke(page, arc(450, 320, 180, 90, -Math.PI * 0.6, Math.PI * 0.1));
+  const dihedralInfo = await page.evaluate(() => {
+    const compiled = window.__symmetryInk.getSelected();
+    return {
+      rule: compiled.group.rule,
+      instances: compiled.instances.length,
+      mirrorAxes: compiled.group.mirrorAxes.length,
+      eventId: compiled.stroke.eventId,
+    };
+  });
+  expect(dihedralInfo.rule).toBe('dihedral');
+  expect(dihedralInfo.instances).toBe(12);
+  expect(dihedralInfo.mirrorAxes).toBe(6);
+  expect(typeof dihedralInfo.eventId).toBe('string');
+
+  // 切到 C5 再落笔。
+  await page.click('[data-rule="cyclic"]');
+  await page.fill('#divisions', '5');
+  await page.dispatchEvent('#divisions', 'input');
+  await drawStroke(page, arc(380, 280, 120, 80, Math.PI * 0.2, Math.PI * 0.9));
+  const cyclicInfo = await page.evaluate(() => {
+    const compiled = window.__symmetryInk.getSelected();
+    return {
+      rule: compiled.group.rule,
+      instances: compiled.instances.length,
+      mirrorAxes: compiled.group.mirrorAxes.length,
+      rotationRays: compiled.group.rotationRays.length,
+    };
+  });
+  expect(cyclicInfo.rule).toBe('cyclic');
+  expect(cyclicInfo.instances).toBe(5);
+  expect(cyclicInfo.mirrorAxes).toBe(0);
+  expect(cyclicInfo.rotationRays).toBe(5);
+
+  // 轴向关系列表随所选笔画的冻结群快照变化。
+  await expect(page.locator('#axis-list .axis-row')).toHaveCount(5);
+
+  // 重新选中第一条 D6 笔画，轴向关系回到 6 条镜线。
+  await page.locator('.stroke-item', { hasText: 's1' }).click();
+  await expect(page.locator('#axis-list .axis-row')).toHaveCount(6);
+});

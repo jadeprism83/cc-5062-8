@@ -1,5 +1,5 @@
 import { SketchDocument, DOCUMENT_VERSION } from '../document.js';
-import { compileStroke, makeSymmetrySnapshot } from '../instance.js';
+import { compileStroke, makeSymmetrySnapshot, strokeOrbitIdentity } from '../instance.js';
 import { makeGroup, normalizeAxisAngle } from '../group.js';
 import { normalizeBrush, brushLocalPolygon, placePolygon } from '../brush.js';
 import { Surface } from '../raster.js';
@@ -63,6 +63,8 @@ const el = {
   statSelectedGroup: document.getElementById('stat-selected-group'),
   statWrites: document.getElementById('stat-writes'),
   statMerged: document.getElementById('stat-merged'),
+  diagnosticStatus: document.getElementById('diagnostic-status'),
+  diagnosticList: document.getElementById('diagnostic-list'),
 };
 
 const ctx = {
@@ -383,6 +385,96 @@ function drawResultAxes(snapshot) {
   ctx.result.restore();
 }
 
+/* ---------- 对称笔迹运行状态与异常标记 ---------- */
+
+/**
+ * 汇总当前作品的对称笔迹状态。anomalies 只标记真正异常的情况：
+ *   - keep-all 政策会在轴/中心重复加深（用户显式选择的对照模式，给出提示级标记）；
+ *   - 轨道写入数与“采样×群阶”不一致且无简并记录时，提示身份关系可能异常；
+ *   - 简并实例的来源元素若在群中不存在，标记身份断裂。
+ * 正常的 coverage-union 重合去重不会被当作异常（不允许伪报）。
+ */
+function collectSymmetryDiagnostics() {
+  const anomalies = [];
+  const summaries = [];
+  for (const stroke of state.doc.strokes) {
+    const compiled = state.doc.getCompiled(stroke.id);
+    const identity = strokeOrbitIdentity(compiled);
+    const expectedRaw = identity.sampleCount * identity.groupOrder;
+    const accounted = identity.writeCount + identity.mergedSamples;
+    const item = {
+      strokeId: stroke.id,
+      eventId: stroke.eventId,
+      group: identity.group,
+      writeCount: identity.writeCount,
+      mergedSamples: identity.mergedSamples,
+      degenerateCount: identity.degenerateCount,
+    };
+    summaries.push(item);
+
+    if (identity.dedupePolicy === 'keep-all') {
+      anomalies.push({
+        level: 'warning',
+        strokeId: stroke.id,
+        reason: 'keep-all 政策：轴/中心处会重复加深（对照模式，非去重失效）',
+      });
+    }
+    if (accounted !== expectedRaw) {
+      anomalies.push({
+        level: 'error',
+        strokeId: stroke.id,
+        reason: `轨道账目不平：写入 ${identity.writeCount} + 合并 ${identity.mergedSamples} ≠ 采样×群阶 ${expectedRaw}`,
+      });
+    }
+    const validIds = new Set(compiled.group.elements.map((element) => element.id));
+    for (const degenerate of identity.degenerateInstances) {
+      for (const sourceId of degenerate.sourceElementIds) {
+        if (!validIds.has(sourceId)) {
+          anomalies.push({
+            level: 'error',
+            strokeId: stroke.id,
+            reason: `简并实例 ${degenerate.elementId} 引用了群外元素 ${sourceId}，身份关系断裂`,
+          });
+        }
+      }
+    }
+  }
+  return {
+    strokeCount: state.doc.strokeCount,
+    healthy: anomalies.every((entry) => entry.level !== 'error'),
+    anomalies,
+    strokes: summaries,
+  };
+}
+
+function renderDiagnostics() {
+  const diagnostics = collectSymmetryDiagnostics();
+  el.diagnosticList.innerHTML = '';
+  if (state.doc.strokeCount === 0) {
+    el.diagnosticStatus.textContent = '暂无笔迹；落笔后在此显示对称运行状态。';
+    el.diagnosticStatus.classList.remove('error', 'warning');
+    return;
+  }
+  if (diagnostics.anomalies.length === 0) {
+    el.diagnosticStatus.textContent =
+      `对称笔迹正常：${diagnostics.strokeCount} 笔，轴/中心简并副本均按覆盖并集只沉积一次。`;
+    el.diagnosticStatus.classList.remove('error', 'warning');
+  } else {
+    const hasError = diagnostics.anomalies.some((entry) => entry.level === 'error');
+    el.diagnosticStatus.textContent = hasError
+      ? `检测到 ${diagnostics.anomalies.length} 项对称/轴向异常，请排查。`
+      : `覆盖政策提示：${diagnostics.anomalies.length} 项（keep-all 对照模式）。`;
+    el.diagnosticStatus.classList.toggle('error', hasError);
+    el.diagnosticStatus.classList.toggle('warning', !hasError);
+    for (const anomaly of diagnostics.anomalies) {
+      const row = document.createElement('div');
+      row.className = `diagnostic-row ${anomaly.level}`;
+      row.textContent = `${anomaly.strokeId} · ${anomaly.reason}`;
+      el.diagnosticList.append(row);
+    }
+  }
+}
+
 /* ---------- 读数与列表 ---------- */
 
 function updateReadouts() {
@@ -408,6 +500,7 @@ function updateReadouts() {
   renderStrokeList();
   renderInstanceList();
   renderAxisList(compiled?.group ?? currentGroup, compiled?.snapshot ?? currentSym);
+  renderDiagnostics();
   if (compiled) {
     el.resultCaption.textContent = `结果区显示完整作品；高亮的轴线来自所选笔画 ${compiled.stroke.id} 的冻结群快照。`;
   } else if (state.doc.strokeCount > 0) {
@@ -428,6 +521,7 @@ function renderStrokeList() {
   }
   for (const stroke of state.doc.strokes) {
     const compiled = state.doc.getCompiled(stroke.id);
+    const identity = strokeOrbitIdentity(compiled);
     const button = document.createElement('button');
     button.type = 'button';
     button.className = 'stroke-item';
@@ -438,12 +532,35 @@ function renderStrokeList() {
     swatch.className = 'stroke-swatch';
     swatch.style.background = stroke.brush.color;
     const label = document.createElement('span');
-    label.textContent = stroke.id;
+    label.className = 'stroke-label';
+    const name = document.createElement('span');
+    name.className = 'stroke-name';
+    name.textContent = stroke.id;
     const meta = document.createElement('span');
     meta.className = 'stroke-meta';
     const groupLabel = `${stroke.symmetry.rule === 'dihedral' ? 'D' : 'C'}${stroke.symmetry.divisions}`;
-    meta.textContent = `${groupLabel} · ${compiled.instances.length} 实例`;
-    button.append(swatch, label, meta);
+    const mergeNote = identity.degenerateCount > 0 ? ` · 轴上简并 ${identity.degenerateCount}` : '';
+    meta.textContent = `${groupLabel} · ${identity.instanceCount} 实例 · 事件 ${stroke.eventId}${mergeNote}`;
+    label.append(name, meta);
+    const undoOne = document.createElement('span');
+    undoOne.className = 'stroke-undo';
+    undoOne.role = 'button';
+    undoOne.tabIndex = 0;
+    undoOne.setAttribute('aria-label', `撤销原始笔事件 ${stroke.eventId}（仅移除 ${stroke.id} 自身的对称副本）`);
+    undoOne.title = `按原始笔事件撤销：只移除 ${stroke.id} 自己的副本，不影响其它笔画`;
+    undoOne.textContent = '撤';
+    const undoStroke = (event) => {
+      event.stopPropagation();
+      undoStrokeEvent(stroke.eventId, stroke.id);
+    };
+    undoOne.addEventListener('click', undoStroke);
+    undoOne.addEventListener('keydown', (event) => {
+      if (event.key === 'Enter' || event.key === ' ') {
+        event.preventDefault();
+        undoStroke(event);
+      }
+    });
+    button.append(swatch, label, undoOne);
     button.addEventListener('click', () => {
       state.selectedId = state.selectedId === stroke.id ? null : stroke.id;
       state.selectedCompiled = state.selectedId ? state.doc.getCompiled(state.selectedId) : null;
@@ -451,6 +568,37 @@ function renderStrokeList() {
     });
     el.strokeList.append(button);
   }
+}
+
+/**
+ * 按原始笔事件撤销：一次轴线落笔只撤去它自己生成的全部对称副本，
+ * 先前另一支同色交叉笔画仍在原处。整个文档快照进入撤销栈，可用顶栏重做恢复。
+ */
+function undoStrokeEvent(eventId, strokeId) {
+  const target = state.doc.strokes.find((stroke) => stroke.eventId === eventId);
+  if (!target) {
+    toast('找不到该笔事件，无法撤销', { error: true });
+    return;
+  }
+  // 与顶栏撤销同一套快照机制：压入撤销栈，并把当前态压入重做栈，
+  // 这样按笔撤销后仍可用顶栏“重做”恢复这一笔。
+  const current = snapshotForUndo();
+  state.undoStack.push(current);
+  state.redoStack.push(current);
+  const removed = state.doc.removeStrokeByEvent(eventId);
+  if (!removed) {
+    state.undoStack.pop();
+    state.redoStack.pop();
+    toast('撤销失败：笔事件已不存在', { error: true });
+    return;
+  }
+  if (state.selectedId === strokeId || state.selectedId === removed.id) {
+    state.selectedId = null;
+    state.selectedCompiled = null;
+  }
+  state.baseSurface = null;
+  refreshAfterMutation();
+  toast(`已按笔事件撤销 ${removed.id}（其余笔画保持原位）`);
 }
 
 function renderInstanceList() {
@@ -694,7 +842,12 @@ function onPointerDown(event) {
     return;
   }
   el.wrap.setPointerCapture?.(event.pointerId);
-  state.drawing = { points: [point], pointerId: event.pointerId };
+  // 一次 pointerdown 分配一个原始笔事件 id；同一次落笔的全部对称副本共享它。
+  state.drawing = {
+    points: [point],
+    pointerId: event.pointerId,
+    eventId: `evt-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`,
+  };
   el.status.textContent = '绘制中…';
   updateLiveFromPoints(state.drawing.points);
 }
@@ -711,7 +864,11 @@ function onPointerMove(event) {
 
 function onPointerUp(event) {
   if (!state.drawing) return;
-  const points = state.drawing.points;
+  const drawing = state.drawing;
+  // pointerup 与 pointercancel 可能对同一次落笔先后到达；只提交一次，
+  // 避免事件重送让同一原始笔事件沉积出重复笔画。
+  if (event.pointerId !== undefined && drawing.pointerId !== event.pointerId) return;
+  const points = drawing.points;
   state.drawing = null;
   state.liveCompiled = null;
   if (points.length === 0) {
@@ -724,6 +881,7 @@ function onPointerUp(event) {
     brush: currentBrush(),
     symmetry: currentSymmetry(),
     dedupePolicy: state.tool.dedupe,
+    eventId: drawing.eventId,
   });
   state.undoStack.push(before);
   state.redoStack = [];
@@ -731,7 +889,7 @@ function onPointerUp(event) {
   state.selectedCompiled = compiled;
   state.baseSurface = null;
   refreshAfterMutation();
-  el.status.textContent = `已落笔 ${compiled.stroke.id} · ${compiled.instances.length} 实例 · 写入 ${compiled.writeCount} 覆盖样本`;
+  el.status.textContent = `已落笔 ${compiled.stroke.id} · 事件 ${compiled.stroke.eventId} · ${compiled.instances.length} 实例 · 写入 ${compiled.writeCount} 覆盖样本`;
 }
 
 function updateLiveFromPoints(points) {
@@ -917,6 +1075,7 @@ function init() {
         brush: { ...currentBrush(), ...(options.brush ?? {}) },
         symmetry: { ...currentSymmetry(), ...(options.symmetry ?? {}) },
         dedupePolicy: options.dedupePolicy ?? state.tool.dedupe,
+        eventId: options.eventId,
       });
       state.selectedId = compiled.stroke.id;
       state.selectedCompiled = compiled;
@@ -924,6 +1083,20 @@ function init() {
       refreshAfterMutation();
       return compiled;
     },
+    /** 按原始笔事件撤销（与历史面板的“撤”按钮同一条路径）。 */
+    undoStrokeEvent: (eventId) => {
+      const target = state.doc.strokes.find((stroke) => stroke.eventId === eventId);
+      if (!target) return null;
+      undoStrokeEvent(eventId, target.id);
+      return target.id;
+    },
+    /** 取出某笔的轨道与稳定身份（含轴上简并实例），供测试与排查。 */
+    getStrokeIdentity: (strokeId) => {
+      const compiled = state.doc.getCompiled(strokeId);
+      return compiled ? strokeOrbitIdentity(compiled) : null;
+    },
+    /** 当前对称笔迹运行状态与轴向关系异常清单。 */
+    getSymmetryDiagnostics: () => collectSymmetryDiagnostics(),
     renderBase: () => {
       renderBaseSurface();
       redrawAll();

@@ -372,3 +372,45 @@ export function instanceProvenance(compiled) {
     })),
   };
 }
+
+/**
+ * 一段笔迹的轨道与稳定身份摘要。
+ *
+ * 一次落笔（一个原始笔事件 eventId）经群变换派生出整条轨道：
+ *   - instances：轨道上的独立实例，每个实例记录它合并了哪些群元素的副本
+ *     （sourceElementIds 长度 >1 表示轴/中心处的简并副本被并成一个身份）；
+ *   - degenerateInstances：在轴或中心处发生简并的实例，是“重合区域多写”的落点；
+ *   - deposition：写入次数与被合并的简并副本数，用于核对是否重复沉积。
+ * 离开重合区后各实例仍以独立 elementId 身份按群变换绘制，不会被整体降透明度。
+ */
+export function strokeOrbitIdentity(compiled) {
+  const degenerateInstances = compiled.instances
+    .filter((instance) => instance.sourceElementIds.length > 1)
+    .map((instance) => ({
+      elementId: instance.elementId,
+      sourceElementIds: instance.sourceElementIds,
+      coverCount: instance.coverCount,
+    }));
+
+  return {
+    strokeId: compiled.stroke.id,
+    eventId: compiled.stroke.eventId ?? compiled.stroke.id,
+    group: compiled.group.rule === 'dihedral'
+      ? `D${compiled.group.divisions}`
+      : `C${compiled.group.divisions}`,
+    groupOrder: compiled.group.order,
+    dedupePolicy: compiled.dedupePolicy,
+    sampleCount: compiled.sampleCount,
+    writeCount: compiled.writeCount,
+    mergedSamples: compiled.mergedSamples,
+    instanceCount: compiled.instances.length,
+    degenerateCount: degenerateInstances.length,
+    degenerateInstances,
+    instances: compiled.instances.map((instance) => ({
+      elementId: instance.elementId,
+      elementKind: instance.elementKind,
+      sourceElementIds: instance.sourceElementIds,
+      coverCount: instance.coverCount,
+    })),
+  };
+}
