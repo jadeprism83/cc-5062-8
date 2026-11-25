@@ -1,0 +1,192 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>对称笔迹 · Symmetry Ink</title>
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body>
+    <header class="topbar">
+      <div class="brand">
+        <span class="brand-mark" aria-hidden="true"></span>
+        <div>
+          <h1>对称笔迹</h1>
+          <p class="brand-sub">旋转与反射群驱动的笔画实例</p>
+        </div>
+      </div>
+      <div class="toolbar">
+        <button id="undo" class="btn" title="撤销上一步">撤销</button>
+        <button id="redo" class="btn" title="重做">重做</button>
+        <button id="clear" class="btn btn-danger" title="清空画布">清空</button>
+        <span class="divider" aria-hidden="true"></span>
+        <button id="replay-check" class="btn" title="序列化后重新解析并重放，校验像素一致">重放自检</button>
+        <button id="export-png" class="btn btn-primary" title="导出真实 PNG 图片">导出 PNG</button>
+        <button id="save-json" class="btn" title="保存可重放笔画数据">保存笔画</button>
+        <button id="open-json" class="btn" title="打开笔画数据并重放">打开笔画</button>
+        <input id="file-input" type="file" accept="application/json" hidden />
+      </div>
+    </header>
+
+    <main class="workspace">
+      <aside class="panel panel-tools" aria-label="工具与对称设置">
+        <section class="group">
+          <h2>对称群</h2>
+          <div class="segmented" role="group" aria-label="对称规则">
+            <button class="seg" data-rule="dihedral" aria-pressed="true">二面体 D<sub>n</sub></button>
+            <button class="seg" data-rule="cyclic" aria-pressed="false">循环 C<sub>n</sub></button>
+          </div>
+          <label class="field">
+            <span>旋转分区 <b id="divisions-value">6</b></span>
+            <input id="divisions" type="range" min="1" max="16" step="1" value="6" />
+          </label>
+          <label class="field">
+            <span>轴角度 <b id="axis-value">0°</b></span>
+            <input id="axis-angle" type="range" min="0" max="180" step="1" value="0" />
+          </label>
+          <div class="field" id="reflection-field">
+            <span>反射语义</span>
+            <div class="segmented small" role="group" aria-label="反射语义">
+              <button class="seg" data-reflection="mirror" aria-pressed="true">严格镜像</button>
+              <button class="seg" data-reflection="preserve-hand" aria-pressed="false">保留手性</button>
+            </div>
+            <p class="hint" id="reflection-hint">
+              严格镜像会翻转笔尖手性（skew 取反），得到真正的几何镜像。
+            </p>
+          </div>
+          <div class="field">
+            <span>重叠覆盖政策</span>
+            <div class="segmented small" role="group" aria-label="覆盖政策">
+              <button class="seg" data-dedupe="coverage-union" aria-pressed="true">覆盖并集</button>
+              <button class="seg" data-dedupe="keep-all" aria-pressed="false">保留全部</button>
+            </div>
+            <p class="hint" id="dedupe-hint">
+              轴上与中心处的简并副本只写入一次覆盖，避免透明色重复加深。
+            </p>
+          </div>
+          <p class="freeze-note">
+            设置仅作用于<b>新笔画</b>。已落笔的笔画冻结创建时的群快照，改动分区数不会让旧笔迹重新叠加。
+          </p>
+        </section>
+
+        <section class="group">
+          <h2>笔尖</h2>
+          <div class="segmented small" role="group" aria-label="笔尖形状">
+            <button class="seg" data-shape="nib" aria-pressed="true">尖笔</button>
+            <button class="seg" data-shape="round" aria-pressed="false">圆头</button>
+          </div>
+          <label class="field">
+            <span>尺寸 <b id="size-value">16</b></span>
+            <input id="size" type="range" min="2" max="64" step="1" value="16" />
+          </label>
+          <label class="field">
+            <span>长宽比 <b id="aspect-value">2.4</b></span>
+            <input id="aspect" type="range" min="1" max="6" step="0.1" value="2.4" />
+          </label>
+          <label class="field">
+            <span>斜切 / 手性 <b id="skew-value">0.55</b></span>
+            <input id="skew" type="range" min="-1.5" max="1.5" step="0.05" value="0.55" />
+          </label>
+          <label class="field">
+            <span>倾斜角 <b id="tilt-value">24°</b></span>
+            <input id="tilt" type="range" min="-90" max="90" step="1" value="24" />
+          </label>
+          <label class="field">
+            <span>不透明度 <b id="opacity-value">0.90</b></span>
+            <input id="opacity" type="range" min="0.05" max="1" step="0.01" value="0.9" />
+          </label>
+          <label class="field inline">
+            <span>颜色</span>
+            <input id="color" type="color" value="#1f2d3d" />
+          </label>
+        </section>
+
+        <section class="group">
+          <h2>画布</h2>
+          <label class="field">
+            <span>背景</span>
+            <select id="background">
+              <option value="#ffffff">白纸</option>
+              <option value="#f4efe6">暖纸</option>
+              <option value="transparent">透明</option>
+            </select>
+          </label>
+          <button id="set-center" class="btn btn-wide" aria-pressed="false">点击画布设置中心</button>
+          <button id="reset-center" class="btn btn-wide">中心回到画布中央</button>
+          <p class="hint">中心坐标 <b id="center-readout">450, 320</b></p>
+        </section>
+      </aside>
+
+      <section class="stage" aria-label="绘画窗口">
+        <div class="stage-head">
+          <span class="stage-title">绘画窗口</span>
+          <span class="stage-status" id="draw-status">就绪</span>
+        </div>
+        <div class="canvas-wrap" id="canvas-wrap">
+          <canvas id="base-canvas"></canvas>
+          <canvas id="live-canvas"></canvas>
+          <canvas id="guide-canvas"></canvas>
+        </div>
+        <div class="stage-foot">
+          <span>拖动绘制；笔迹按当前对称群生成关联实例。</span>
+          <span id="cursor-readout">—</span>
+        </div>
+      </section>
+
+      <aside class="panel panel-result" aria-label="结果区">
+        <section class="group">
+          <div class="result-head">
+            <h2>结果区</h2>
+            <label class="toggle">
+              <input id="toggle-axes" type="checkbox" checked />
+              <span>显示轴线</span>
+            </label>
+            <label class="toggle">
+              <input id="toggle-provenance" type="checkbox" />
+              <span>来源着色</span>
+            </label>
+          </div>
+          <div class="result-canvas-wrap">
+            <canvas id="result-canvas"></canvas>
+          </div>
+          <p class="hint" id="result-caption">结果区由引擎重新渲染，轴线对应所选笔画的冻结群快照。</p>
+        </section>
+
+        <section class="group provenance">
+          <h2>实例与来源</h2>
+          <div class="stat-row">
+            <span>当前群</span><b id="stat-group">D6 · 12 变换</b>
+          </div>
+          <div class="stat-row">
+            <span>笔画数</span><b id="stat-strokes">0</b>
+          </div>
+          <div class="stat-row">
+            <span>所选笔画</span><b id="stat-selected">—</b>
+          </div>
+          <div class="stat-row">
+            <span>所选笔画群</span><b id="stat-selected-group">—</b>
+          </div>
+          <div class="stat-row">
+            <span>写入样本</span><b id="stat-writes">0</b>
+          </div>
+          <div class="stat-row">
+            <span>合并简并副本</span><b id="stat-merged">0</b>
+          </div>
+          <p class="hint" id="reflection-readout"></p>
+          <div class="stroke-list" id="stroke-list" role="list"></div>
+          <h3>所选笔画实例</h3>
+          <div class="instance-list" id="instance-list"></div>
+        </section>
+
+        <section class="group">
+          <h2>轴向关系</h2>
+          <div class="axis-list" id="axis-list"></div>
+          <p class="hint" id="axis-note"></p>
+        </section>
+      </aside>
+    </main>
+
+    <div class="toast" id="toast" role="status" aria-live="polite"></div>
+    <script type="module" src="/src/ui/main.js"></script>
+  </body>
+</html>

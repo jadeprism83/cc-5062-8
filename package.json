@@ -1,0 +1,17 @@
+{
+  "name": "symmetry-ink",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "对称笔迹绘画引擎：旋转与反射群驱动的笔刷实例、覆盖去重与可重放文档",
+  "scripts": {
+    "start": "node server.js",
+    "test": "node --test test/*.test.js",
+    "test:ui": "playwright test",
+    "render": "node cli.js render",
+    "samples": "node scripts/make-samples.js"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.65.1"
+  }
+}
